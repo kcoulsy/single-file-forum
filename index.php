@@ -74,6 +74,12 @@ function generateBreadcrumbs($page_url, $db)
   } elseif (str_starts_with($page_url, '/profile/')) {
     $username = str_replace('/profile/', '', $page_url);
     $breadcrumbs[] = [$username . "'s Profile", $page_url];
+
+  } elseif ($page_url === '/settings') {
+    $breadcrumbs[] = ['Settings', $page_url];
+
+  } elseif ($page_url === '/members') {
+    $breadcrumbs[] = ['Members', $page_url];
   }
 
   return $breadcrumbs;
@@ -694,6 +700,23 @@ function getUserProfile($username)
   ];
 }
 
+function getAllUsers()
+{
+  global $db;
+
+  $query = "SELECT u.id, u.username, u.created_at,
+            (SELECT COUNT(*) FROM forum_posts WHERE user_id = u.id) +
+            (SELECT COUNT(*) FROM forum_comments WHERE user_id = u.id) AS post_count
+            FROM users u";
+  $result = $db->query($query);
+
+  $users = [];
+  while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+    $users[] = $row;
+  }
+  return $users;
+}
+
 
 /**
  * 
@@ -735,7 +758,7 @@ function getUserProfile($username)
   </script>
 </head>
 
-<body>
+<f>
   <header class="container mx-auto mt-8 px-4 max-w-4xl">
     <div class="flex justify-between items-center bg-gray-200 py-4 px-6 border border-gray-300 rounded-md shadow-sm">
       <a href="/" class="text-3xl font-bold text-blue-700">Forum</a>
@@ -887,7 +910,8 @@ function getUserProfile($username)
             </a>
           <?php endif; ?>
           <span class="self-end"><?php echo $forum_stats['topic_count']; ?> topics •
-            <?php echo $forum_stats['post_count']; ?> posts • <?php echo $forum_stats['member_count']; ?> members</span>
+            <?php echo $forum_stats['post_count']; ?> posts • <a href="/members"
+              class="text-blue-600 hover:underline"><?php echo $forum_stats['member_count']; ?> members</a></span>
         </div>
       </div>
     </main>
@@ -1391,8 +1415,81 @@ function getUserProfile($username)
           </form>
         </div>
     </main>
+  <?php elseif ($page_url === '/members'): ?>
+    <?php
+    $users = getAllUsers();
+    ?>
+    <main class="max-w-4xl mx-auto m-4 px-4">
+      <div class="bg-gray-200 p-4 rounded-lg">
+        <header class="bg-blue-700 text-white p-4 rounded-t-lg flex justify-between items-center">
+          <h1 class="text-2xl font-bold">Forum Members</h1>
+        </header>
+        <div class="bg-white rounded-b-lg shadow-md">
+          <div class="grid grid-cols-12 gap-4 p-3 bg-gray-200 font-semibold text-sm">
+            <div class="col-span-5">Username</div>
+            <div class="col-span-4">Joined</div>
+            <div class="col-span-3 text-center">Posts</div>
+          </div>
+          <?php if (count($users) === 0): ?>
+            <div class="grid grid-cols-12 gap-4 p-3 text-sm items-center bg-gray-50">
+              <div class="col-span-12 text-center py-4">
+                <svg class="w-6 h-6 text-gray-400 mx-auto mb-2" xmlns="http://www.w3.org/2000/svg" fill="none"
+                  viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                </svg>
+                <p class="text-gray-600">No members found.</p>
+              </div>
+            </div>
+          <?php else: ?>
+            <?php foreach ($users as $index => $user): ?>
+              <div
+                class="grid grid-cols-12 gap-4 p-3 text-sm items-center <?php echo $index % 2 === 0 ? 'bg-gray-50' : 'bg-white'; ?>">
+                <div class="col-span-5 flex items-center">
+                  <svg class="w-5 h-5 text-blue-600 mr-2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"
+                    fill="currentColor">
+                    <path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clip-rule="evenodd" />
+                  </svg>
+                  <a href="/profile/<?php echo $user['username']; ?>" class="text-blue-600 hover:underline font-semibold">
+                    <?php echo htmlspecialchars($user['username']); ?>
+                  </a>
+                </div>
+                <div class="col-span-4">
+                  <?php echo date('M j, Y', strtotime($user['created_at'])); ?>
+                </div>
+                <div class="col-span-3 text-center">
+                  <?php echo $user['post_count']; ?>
+                </div>
+              </div>
+            <?php endforeach; ?>
+          <?php endif; ?>
+        </div>
+        <div class="mt-4 text-sm text-gray-600 flex items-center justify-between">
+          <span>Total members: <?php echo count($users); ?></span>
+        </div>
+      </div>
+    </main>
 
+  <?php else: ?>
+    <main class="max-w-4xl mx-auto m-4 px-4">
+      <h1 class="text-4xl font-bold text-center text-red-600 mb-4">404</h1>
+      <div class="py-4 mb-4">
+        <p class="text-xl text-center text-gray-700">Page Not Found</p>
+      </div>
+      <p class="text-gray-600 text-center mb-6">The page you are looking for might have been removed, had its name
+        changed, or is temporarily unavailable.</p>
+      <div class="text-center">
+        <a href="/"
+          class="inline-block bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 transition duration-200">
+          Return to Homepage
+        </a>
+      </div>
+    </main>
   <?php endif; ?>
-</body>
+
+  <footer class="mt-8 text-gray-500 text-sm">
+    <p class="text-sm text-center">Forum Software v1.0 | &copy; 2023 Our Forum</p>
+  </footer>
+  </body>
 
 </html>
