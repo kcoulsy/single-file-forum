@@ -118,6 +118,37 @@ function dd($value)
   die();
 }
 
+function validateUsername($username)
+{
+  if (strlen($username) < 3 || strlen($username) > 25) {
+    return "Username must be between 3 and 25 characters long.";
+  }
+  if (preg_match('/\s/', $username)) {
+    return "Username cannot contain spaces.";
+  }
+  if (!ctype_alnum($username)) {
+    return "Username can only contain letters and numbers.";
+  }
+  return null;
+}
+
+function validatePassword($password)
+{
+  if (strlen($password) < 10) {
+    return "Password must be at least 10 characters long.";
+  }
+  if (!preg_match('/[A-Za-z]/', $password)) {
+    return "Password must contain at least one letter.";
+  }
+  if (!preg_match('/\d/', $password)) {
+    return "Password must contain at least one number.";
+  }
+  if (!preg_match('/[^A-Za-z\d]/', $password)) {
+    return "Password must contain at least one symbol.";
+  }
+  return null;
+}
+
 /**
  * 
  * Database setup
@@ -283,13 +314,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && verifyCSRFToken($_POST['csrf_token'
       $confirm_password = $_POST['confirm_password'];
 
       $errors = [];
-      if (strlen($username) < 3) {
-        $errors[] = "Username must be at least 3 characters long.";
+      $username_error = validateUsername($username);
+      if ($username_error) {
+        $errors[] = $username_error;
       }
 
-      if (strlen($password) < 8) {
-        $errors[] = "Password must be at least 8 characters long.";
+      $password_error = validatePassword($password);
+      if ($password_error) {
+        $errors[] = $password_error;
       }
+
       if ($password !== $confirm_password) {
         $errors[] = "Passwords do not match.";
       }
@@ -327,6 +361,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && verifyCSRFToken($_POST['csrf_token'
       $username = trim($_POST['username']);
       $password = $_POST['password'];
 
+      $username = SQLite3::escapeString($username);
       $user = $db->querySingle("SELECT * FROM users WHERE username = '$username'", true);
 
       if ($user && verifyPassword($password, $user['password'])) {
@@ -341,7 +376,108 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && verifyCSRFToken($_POST['csrf_token'
         header('Location: /login');
         exit;
       }
+
       break;
+
+    case '/settings/username':
+      if (!$user_id) {
+        header('Location: /login');
+        exit;
+      }
+      $new_username = trim($_POST['username']);
+      $current_password = $_POST['current_password'];
+      $errors = [];
+
+      $username_error = validateUsername($new_username);
+      if ($username_error) {
+        $errors[] = $username_error;
+      }
+
+      // username must be unique
+      $existing_username = $db->querySingle("SELECT id FROM users WHERE username = '$new_username'");
+      if ($existing_username) {
+        $errors[] = "Username already exists.";
+      }
+
+      // must enter current password to change username
+      $result = $db->querySingle("SELECT password FROM users WHERE id = $user_id");
+      if ($result === false) {
+        $errors[] = "User not found.";
+      } else {
+        $user = ['password' => $result];
+      }
+
+      if (!$user || !verifyPassword($current_password, $user['password'])) {
+        $errors[] = "Current password is incorrect.";
+      }
+
+
+
+      if (empty($errors)) {
+        $new_username = SQLite3::escapeString($new_username);
+        $db->exec("UPDATE users SET username = '$new_username' WHERE id = $user_id");
+        $_SESSION['success'] = "Username updated successfully.";
+        $_SESSION['username'] = $new_username;
+        header('Location: /settings');
+        exit;
+      }
+
+      if (!empty($errors)) {
+        $_SESSION['errors'] = $errors;
+        header('Location: /settings');
+        exit;
+      }
+
+
+
+    case '/settings/password':
+      if (!$user_id) {
+        header('Location: /login');
+        exit;
+      }
+      $current_password = $_POST['current_password'];
+      $new_password = $_POST['new_password'];
+
+      $confirm_password = $_POST['confirm_password'];
+
+      // validate password
+      $errors = [];
+
+      $result = $db->querySingle("SELECT password FROM users WHERE id = $user_id");
+      if ($result === false) {
+        $errors[] = "User not found.";
+      } else {
+        $user = ['password' => $result];
+      }
+
+      if (!$user || !verifyPassword($current_password, $user['password'])) {
+        $errors[] = "Current password is incorrect.";
+      }
+
+      $password_error = validatePassword($new_password);
+      if ($password_error) {
+        $errors[] = $password_error;
+      }
+
+      if ($new_password !== $confirm_password) {
+        $errors[] = "New password and confirm password do not match.";
+      }
+
+      if (empty($errors)) {
+
+        $hashed_password = hashPassword($new_password);
+        $db->exec("UPDATE users SET password = '$hashed_password' WHERE id = $user_id");
+        $_SESSION['success'] = "Password updated successfully.";
+        header('Location: /settings');
+        exit;
+      }
+
+      if (!empty($errors)) {
+        $_SESSION['errors'] = $errors;
+        header('Location: /settings');
+        exit;
+      }
+
   }
 }
 
@@ -605,7 +741,9 @@ function getUserProfile($username)
       <a href="/" class="text-3xl font-bold text-blue-700">Forum</a>
       <nav class="space-x-4">
         <?php if (isset($_SESSION['user_id'])): ?>
-          <span class="text-gray-600">Welcome, <?php echo htmlspecialchars($_SESSION['username']); ?></span>
+          <span class="text-gray-600">Welcome, <a href="/profile/<?php echo $_SESSION['username']; ?>"
+              class="text-blue-600 hover:underline"><?php echo htmlspecialchars($_SESSION['username']); ?></a></span>
+          <a href="/settings" class="text-blue-600 hover:underline">Settings</a>
           <a href="/logout" class="text-blue-600 hover:underline">Logout</a>
         <?php else: ?>
           <a href="/login" class="text-blue-600 hover:underline">Login</a>
@@ -1184,6 +1322,74 @@ function getUserProfile($username)
           </form>
         </div>
       </div>
+    </main>
+
+  <?php elseif ($page_url === '/settings'): ?>
+    <main class="max-w-4xl mx-auto m-4 px-4">
+      <div class="bg-gray-200 p-4 rounded-lg">
+        <header class="bg-blue-700 text-white p-4 rounded-t-lg">
+          <h1 class="text-2xl font-bold">Update Username</h1>
+        </header>
+        <div class="bg-white rounded-b-lg shadow-md p-6">
+          <form action="/settings/username" method="post" class="space-y-4">
+            <input type="hidden" name="csrf_token" value="<?php echo generateCSRFToken(); ?>">
+            <div>
+              <label for="username" class="block text-sm font-medium text-gray-700">Username</label>
+              <input type="text" id="username" name="username" required
+                value="<?php echo htmlspecialchars($form_data['username']); ?>"
+                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 mt-1"
+                placeholder="Username">
+            </div>
+            <p class="text-sm text-gray-500">Enter your current password to update your username.</p>
+            <div>
+              <label for="current_password" class="block text-sm font-medium text-gray-700">Password</label>
+              <input type="password" id="current_password" name="current_password" required
+                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 mt-1"
+                placeholder="Password">
+            </div>
+            <div>
+              <button type="submit"
+                class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                Update Username
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div class="bg-gray-200 p-4 rounded-lg mt-4">
+        <header class="bg-blue-700 text-white p-4 rounded-t-lg">
+          <h1 class="text-2xl font-bold">Update Password</h1>
+        </header>
+        <div class="bg-white rounded-b-lg shadow-md p-6">
+          <form action="/settings/password" method="post" class="space-y-4">
+            <input type="hidden" name="csrf_token" value="<?php echo generateCSRFToken(); ?>">
+            <div>
+              <label for="current_password" class="block text-sm font-medium text-gray-700">Current Password</label>
+              <input type="password" id="current_password" name="current_password" required
+                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 mt-1"
+                placeholder="Password">
+            </div>
+            <div>
+              <label for="new_password" class="block text-sm font-medium text-gray-700">New Password</label>
+              <input type="password" id="new_password" name="new_password" required
+                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 mt-1"
+                placeholder="New Password">
+            </div>
+            <div>
+              <label for="confirm_password" class="block text-sm font-medium text-gray-700">Confirm Password</label>
+              <input type="password" id="confirm_password" name="confirm_password" required
+                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 mt-1"
+                placeholder="Confirm Password">
+            </div>
+            <div>
+              <button type="submit"
+                class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                Update Password
+              </button>
+            </div>
+          </form>
+        </div>
     </main>
 
   <?php endif; ?>
