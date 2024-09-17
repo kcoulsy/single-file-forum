@@ -383,8 +383,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && verifyCSRFToken($_POST['csrf_token'
         exit;
       }
 
-      break;
-
     case '/settings/username':
       if (!$user_id) {
         header('Location: /login');
