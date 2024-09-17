@@ -1,16 +1,128 @@
 <?php
 
-$page_url = $_SERVER['REQUEST_URI'];
-// strip the query params
-$page_url = explode('?', $page_url)[0];
-
-// sqlite db
-$db = new SQLite3('db.sqlite');
-
 session_start();
+
+/**
+ * 
+ * Page variables
+ * 
+ */
+define('TINYMCE_API_KEY', 'h2cqc7j42cmawkatv4jsapg531vyrncgjihwn1o6tqvgmvjz');
+
+$page_url = explode('?', $_SERVER['REQUEST_URI'])[0];
+
+$db = new SQLite3('db.sqlite');
 
 $user_id = $_SESSION['user_id'] ?? null;
 
+/**
+ * 
+ * Utility functions
+ * 
+ */
+
+function generateCSRFToken()
+{
+  if (!isset($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+  }
+  return $_SESSION['csrf_token'];
+}
+
+function verifyCSRFToken($token)
+{
+  if (isset($_SESSION['csrf_token']) && hash_equals($_SESSION['csrf_token'], $token)) {
+    return true;
+  }
+
+  die('CSRF token validation failed');
+}
+
+function generateSlug($text)
+{
+  $slug = strtolower($text);
+  $slug = preg_replace('/[^a-z0-9]+/', '-', $slug);
+  $slug = trim($slug, '-');
+  return $slug;
+}
+
+function generateBreadcrumbs($page_url, $db)
+{
+  $breadcrumbs = [['Home', '/']];
+
+  if (str_starts_with($page_url, '/category/')) {
+    $category_slug = str_replace('/category/', '', $page_url);
+    $category_name = $db->querySingle("SELECT name FROM forum_categories WHERE slug = '$category_slug'");
+    $breadcrumbs[] = [$category_name, $page_url];
+
+  } elseif (str_starts_with($page_url, '/post/')) {
+    $post_id = str_replace('/post/', '', $page_url);
+    $post = $db->querySingle("SELECT title, category_id FROM forum_posts WHERE id = $post_id", true);
+    $category = $db->querySingle("SELECT name, slug FROM forum_categories WHERE id = {$post['category_id']}", true);
+    $breadcrumbs[] = [$category['name'], "/category/{$category['slug']}"];
+    $breadcrumbs[] = [$post['title'], $page_url];
+
+  } elseif ($page_url === '/create-categories') {
+    $breadcrumbs[] = ['Create Category', $page_url];
+
+  } elseif (str_starts_with($page_url, '/create-post')) {
+    $category_slug = $_GET['category'];
+    $category_name = $db->querySingle("SELECT name FROM forum_categories WHERE slug = '$category_slug'");
+    $breadcrumbs[] = [$category_name, "/category/$category_slug"];
+    $breadcrumbs[] = ['Create Post', $page_url];
+
+  } elseif (str_starts_with($page_url, '/profile/')) {
+    $username = str_replace('/profile/', '', $page_url);
+    $breadcrumbs[] = [$username . "'s Profile", $page_url];
+  }
+
+  return $breadcrumbs;
+}
+
+// Add this function to hash passwords
+function hashPassword($password)
+{
+  return password_hash($password, PASSWORD_DEFAULT);
+}
+
+// Add this function to verify passwords
+function verifyPassword($password, $hash)
+{
+  return password_verify($password, $hash);
+}
+
+function sanitizeHTML($input)
+{
+  $search = array(
+    '@<script[^>]*?>.*?</script>@si',   // Strip out javascript
+    '@<[\/\!]*?[^<>]*?>@si',            // Strip out HTML tags
+    '@<style[^>]*?>.*?</style>@siU',    // Strip style tags properly
+    '@<![\s\S]*?--[ \t\n\r]*>@'         // Strip multi-line comments
+  );
+  $output = preg_replace($search, '', $input);
+  return $output;
+}
+
+function renderHTML($input)
+{
+  $allowed_tags = '<p><br><strong><em><u><h1><h2><h3><h4><h5><h6><img><li><ol><ul><span><div><a>';
+  $output = strip_tags(trim($input), $allowed_tags);
+  return $output;
+}
+
+function dd($value)
+{
+  echo '<pre>';
+  var_dump($value);
+  echo '</pre>';
+  die();
+}
+
+/**
+ * 
+ * Database setup
+ * 
+ */
 if ($page_url === '/init') {
   // setup database tables
   // users
@@ -67,73 +179,11 @@ if ($page_url === '/init') {
   )");
 }
 
-// Add this function to generate CSRF token
-function generateCSRFToken()
-{
-  if (!isset($_SESSION['csrf_token'])) {
-    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
-  }
-  return $_SESSION['csrf_token'];
-}
-
-// Add this function to verify CSRF token
-function verifyCSRFToken($token)
-{
-  if (isset($_SESSION['csrf_token']) && hash_equals($_SESSION['csrf_token'], $token)) {
-    return true;
-  }
-
-  die('CSRF token validation failed');
-}
-
-// Add this function to generate a slug
-function generateSlug($text)
-{
-  $slug = strtolower($text);
-  $slug = preg_replace('/[^a-z0-9]+/', '-', $slug);
-  $slug = trim($slug, '-');
-  return $slug;
-}
-
-// Add this function to generate breadcrumbs
-function generateBreadcrumbs($page_url, $db)
-{
-  $breadcrumbs = [['Home', '/']];
-
-  if (str_starts_with($page_url, '/category/')) {
-    $category_slug = str_replace('/category/', '', $page_url);
-    $category_name = $db->querySingle("SELECT name FROM forum_categories WHERE slug = '$category_slug'");
-    $breadcrumbs[] = [$category_name, $page_url];
-  } elseif (str_starts_with($page_url, '/post/')) {
-    $post_id = str_replace('/post/', '', $page_url);
-    $post = $db->querySingle("SELECT title, category_id FROM forum_posts WHERE id = $post_id", true);
-    $category = $db->querySingle("SELECT name, slug FROM forum_categories WHERE id = {$post['category_id']}", true);
-    $breadcrumbs[] = [$category['name'], "/category/{$category['slug']}"];
-    $breadcrumbs[] = [$post['title'], $page_url];
-  } elseif ($page_url === '/create-categories') {
-    $breadcrumbs[] = ['Create Category', $page_url];
-  } elseif (str_starts_with($page_url, '/create-post')) {
-    $category_slug = $_GET['category'];
-    $category_name = $db->querySingle("SELECT name FROM forum_categories WHERE slug = '$category_slug'");
-    $breadcrumbs[] = [$category_name, "/category/$category_slug"];
-    $breadcrumbs[] = ['Create Post', $page_url];
-  }
-
-  return $breadcrumbs;
-}
-
-// Add this function to hash passwords
-function hashPassword($password)
-{
-  return password_hash($password, PASSWORD_DEFAULT);
-}
-
-// Add this function to verify passwords
-function verifyPassword($password, $hash)
-{
-  return password_verify($password, $hash);
-}
-
+/**
+ * 
+ * Routing
+ * 
+ */
 
 if ($user_id && ($page_url === '/signup' || $page_url === '/login')) {
   header('Location: /');
@@ -302,16 +352,29 @@ if ($page_url === '/logout') {
   exit;
 }
 
+/** 
+ * 
+ * Database access functions
+ * 
+ */
+
 function getCategories()
 {
   global $db;
 
   $categories = [];
-  $result = $db->query("SELECT fc.id, fc.name, fc.slug, 
-                        (SELECT COUNT(*) FROM forum_posts WHERE category_id = fc.id) as post_count,
-                        (SELECT COUNT(*) FROM forum_comments WHERE post_id IN 
-                          (SELECT id FROM forum_posts WHERE category_id = fc.id)) as comment_count
-                        FROM forum_categories fc");
+  $query = "SELECT fc.id, fc.name, fc.slug, 
+                   (SELECT COUNT(*) FROM forum_posts WHERE category_id = fc.id) as post_count,
+                   (SELECT COUNT(*) FROM forum_comments WHERE post_id IN 
+                     (SELECT id FROM forum_posts WHERE category_id = fc.id)) as comment_count,
+                   (SELECT title FROM forum_posts WHERE category_id = fc.id ORDER BY created_at DESC LIMIT 1) as latest_post_title,
+                   (SELECT username FROM users WHERE id = (SELECT user_id FROM forum_posts WHERE category_id = fc.id ORDER BY created_at DESC LIMIT 1)) as latest_post_author,
+                   (SELECT id FROM forum_posts WHERE category_id = fc.id ORDER BY created_at DESC LIMIT 1) as latest_post_id,
+                   (SELECT created_at FROM forum_posts WHERE category_id = fc.id ORDER BY created_at DESC LIMIT 1) as latest_post_date
+            FROM forum_categories fc";
+
+  $result = $db->query($query);
+
   while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
     $categories[] = $row;
   }
@@ -325,10 +388,6 @@ function getPostsByCategory($category_slug)
   $posts = [];
   $category_slug = SQLite3::escapeString($category_slug);
 
-  // Debug: Check the category_slug
-  error_log("Category slug: " . $category_slug);
-
-  // Debug: Check if the category exists
   $category_id = $db->querySingle("SELECT id FROM forum_categories WHERE slug = '$category_slug'");
   if ($category_id === null) {
     error_log("Category not found for slug: " . $category_slug);
@@ -347,8 +406,6 @@ function getPostsByCategory($category_slug)
   $result = $db->query($query);
 
   if ($result === false) {
-    // Handle the error, e.g., log it or throw an exception
-    error_log("SQLite error: " . $db->lastErrorMsg());
     return [];
   }
 
@@ -428,6 +485,86 @@ function getCategoryStats($category_slug)
     'post_count' => $post_count
   ];
 }
+
+function getCategoryBySlug($category_slug)
+{
+  global $db;
+
+  $category_slug = SQLite3::escapeString($category_slug);
+  $query = "SELECT id, name, slug FROM forum_categories WHERE slug = '$category_slug'";
+  $result = $db->querySingle($query, true);
+
+  return $result ?: null;
+}
+
+function getPostsByUserId($user_id)
+{
+  global $db;
+
+  $query = "SELECT id, title, content, created_at FROM forum_posts WHERE user_id = $user_id";
+  $result = $db->query($query);
+
+  $posts = [];
+  while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+    $posts[] = $row;
+  }
+
+  return $posts;
+}
+
+function getCommentsByUserId($user_id)
+{
+  global $db;
+
+  $query = "SELECT c.id, c.content, c.created_at, p.id AS post_id, p.title AS post_title 
+            FROM forum_comments c
+            JOIN forum_posts p ON c.post_id = p.id
+            WHERE c.user_id = $user_id";
+  $result = $db->query($query);
+
+  $comments = [];
+  while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+    $comments[] = $row;
+  }
+
+  return $comments;
+}
+
+function getUserProfile($username)
+{
+  global $db;
+
+  $username = SQLite3::escapeString($username);
+  $query = "SELECT id, username, created_at FROM users WHERE username = '$username'";
+  $result = $db->querySingle($query, true);
+
+  if (!$result) {
+    return null;
+  }
+
+  $user_id = $result['id'];
+  $posts = getPostsByUserId($user_id);
+  $comments = getCommentsByUserId($user_id);
+  $post_count = count($posts);
+  $comment_count = count($comments);
+
+
+
+  return [
+    'user' => $result,
+    'posts' => $posts,
+    'comments' => $comments,
+    'post_count' => $post_count + $comment_count
+  ];
+}
+
+
+/**
+ * 
+ * Markup start
+ * 
+ */
+
 ?>
 
 <!DOCTYPE html>
@@ -437,13 +574,34 @@ function getCategoryStats($category_slug)
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Forum</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-
+  <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+  <script src="https://cdn.tiny.cloud/1/<?= TINYMCE_API_KEY ?>/tinymce/6/tinymce.min.js"
+    referrerpolicy="origin"></script>
+  <script>
+    tinymce.init({
+      selector: '.wysiwyg-editor',
+      plugins: 'link lists',
+      toolbar: 'undo redo | styles | bold italic underline | alignleft aligncenter alignright | bullist numlist | forecolor backcolor | fontsizeselect | link',
+      menubar: false,
+      statusbar: false,
+      style_formats: [
+        {
+          title: 'Headings', items: [
+            { title: 'Heading 1', format: 'h1' },
+            { title: 'Heading 2', format: 'h2' },
+            { title: 'Heading 3', format: 'h3' },
+          ]
+        },
+      ],
+      fontsize_formats: '8pt 10pt 12pt 14pt 18pt 24pt 36pt',
+      content_style: 'body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol"; font-size: 14px; }',
+    });
+  </script>
 </head>
 
 <body>
   <header class="container mx-auto mt-8 px-4 max-w-4xl">
-    <div class="flex justify-between items-center bg-gray-200 py-4 px-6 border border-gray-400 rounded-lg shadow-md">
+    <div class="flex justify-between items-center bg-gray-200 py-4 px-6 border border-gray-300 rounded-md shadow-sm">
       <a href="/" class="text-3xl font-bold text-blue-700">Forum</a>
       <nav class="space-x-4">
         <?php if (isset($_SESSION['user_id'])): ?>
@@ -554,9 +712,17 @@ function getCategoryStats($category_slug)
                 <div class="col-span-2 text-center"><?php echo $category['comment_count']; ?></div>
                 <div class="col-span-2 text-center text-xs">
                   <?php if ($category['post_count'] > 0): ?>
-                    <p class="font-semibold">Topic Title</p>
-                    <p class="text-gray-500">by Username</p>
-                    <p class="text-gray-400">Date</p>
+                    <p class="font-semibold">
+                      <a href="/post/<?php echo $category['latest_post_id']; ?>" class="text-blue-600 hover:underline">
+                        <?php echo htmlspecialchars(substr($category['latest_post_title'], 0, 30)) . (strlen($category['latest_post_title']) > 30 ? '...' : ''); ?>
+                      </a>
+                    </p>
+                    <p class="text-gray-500">by
+                      <a href="/profile/<?php echo $category['latest_post_author']; ?>" class="text-blue-600 hover:underline">
+                        <?php echo htmlspecialchars($category['latest_post_author']); ?>
+                      </a>
+                    </p>
+                    <p class="text-gray-400"><?php echo date('M j, Y', strtotime($category['latest_post_date'])); ?></p>
                   <?php else: ?>
                     <p class="text-gray-500">No posts yet</p>
                   <?php endif; ?>
@@ -587,93 +753,102 @@ function getCategoryStats($category_slug)
         </div>
       </div>
     </main>
-
+    <?php # Category Page ?>
   <?php elseif (str_starts_with($page_url, '/category')): ?>
     <?php
     $category_slug = str_replace('/category/', '', $page_url);
-    $posts = getPostsByCategory($category_slug);
-    $category_stats = getCategoryStats($category_slug);
+    $category = getCategoryBySlug($category_slug);
+    if (!$category) {
+      echo "<p>Category not found.</p>";
+    } else {
+      $posts = getPostsByCategory($category_slug);
+      $category_stats = getCategoryStats($category_slug);
+      ?>
+      <main class="max-w-4xl mx-auto m-4 px-4">
+        <div class="bg-gray-200 p-4 rounded-lg">
+          <header class="bg-blue-700 text-white p-4 rounded-t-lg">
+            <h1 class="text-2xl font-bold"><?php echo htmlspecialchars($category['name']); ?></h1>
+          </header>
+          <div class="bg-white rounded-b-lg shadow-md">
+            <div class="grid grid-cols-12 gap-4 p-3 bg-gray-200 font-semibold text-sm">
+              <div class="col-span-6">Topic</div>
+              <div class="col-span-2 text-center">Author</div>
+              <div class="col-span-1 text-center">Replies</div>
+              <div class="col-span-1 text-center">Views</div>
+              <div class="col-span-2 text-center">Last Post</div>
+            </div>
+            <?php if (count($posts) === 0): ?>
+              <div class="grid grid-cols-12 gap-4 p-3 text-sm items-center bg-gray-50">
+                <div class="col-span-12 text-center py-4">
+                  <svg class="w-6 h-6 text-gray-400 mx-auto mb-2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+                    fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <line x1="12" y1="8" x2="12" y2="12"></line>
+                    <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                  </svg>
+                  <p class="text-gray-600">No posts found in this category.</p>
+                </div>
+              </div>
+            </div>
+          <?php else: ?>
+            <?php foreach ($posts as $index => $post): ?>
+              <div
+                class="grid grid-cols-12 gap-4 p-3 text-sm items-center <?php echo $index % 2 === 0 ? 'bg-gray-50' : 'bg-white'; ?>">
+                <div class="col-span-6 flex items-center">
+                  <svg class="w-5 h-5 text-blue-600 mr-2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                  </svg>
+                  <a href="/post/<?php echo $post['id']; ?>"
+                    class="text-blue-600 hover:underline"><?php echo htmlspecialchars($post['title']); ?></a>
+                </div>
+                <div class="col-span-2 text-center flex items-center justify-center">
+                  <svg class="w-4 h-4 mr-1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                    <circle cx="12" cy="7" r="4"></circle>
+                  </svg>
+                  <a href="/profile/<?php echo $post['username']; ?>"
+                    class="text-blue-600 hover:underline"><?php echo htmlspecialchars($post['username']); ?></a>
+                </div>
+                <div class="col-span-1 text-center"><?php echo $post['reply_count']; ?></div>
+                <div class="col-span-1 text-center"><?php echo $post['view_count']; ?></div>
+                <div class="col-span-2 text-center">
+                  <?php if ($post['last_reply_date']): ?>
+                    <?php echo date('M j, Y', strtotime($post['last_reply_date'])); ?>
+                  <?php else: ?>
+                    No replies
+                  <?php endif; ?>
+                </div>
+              </div>
+            <?php endforeach; ?>
+          <?php endif; ?>
+        </div>
+        <div class="mt-4 text-sm text-gray-600 flex items-center justify-between">
+          <?php if (isset($_SESSION['user_id'])): ?>
+            <a href="/create-post?category=<?php echo $category['slug']; ?>"
+              class="bg-blue-100 text-blue-700 px-3 py-1 rounded hover:bg-blue-200 flex items-center">
+              New Topic
+              <svg class="w-4 h-4 ml-1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                <polyline points="15 3 21 3 21 9"></polyline>
+                <line x1="10" y1="14" x2="21" y2="3"></line>
+              </svg>
+            </a>
+          <?php else: ?>
+            <a href="/signup" class="text-blue-700 px-3 py-1 flex items-center">
+              Sign Up to Create a Topic
+            </a>
+          <?php endif; ?>
+          <span class="self-end"><?php echo $category_stats['topic_count']; ?> topics •
+            <?php echo $category_stats['post_count']; ?> posts</span>
+        </div>
+        </div>
+      </main>
+      <?php
+    }
     ?>
-    <main class="max-w-4xl mx-auto m-4 px-4">
-      <div class="bg-gray-200 p-4 rounded-lg">
-        <header class="bg-blue-700 text-white p-4 rounded-t-lg">
-          <h1 class="text-2xl font-bold"><?php echo $category_slug; ?></h1>
-        </header>
-        <div class="bg-white rounded-b-lg shadow-md">
-          <div class="grid grid-cols-12 gap-4 p-3 bg-gray-200 font-semibold text-sm">
-            <div class="col-span-6">Topic</div>
-            <div class="col-span-2 text-center">Author</div>
-            <div class="col-span-1 text-center">Replies</div>
-            <div class="col-span-1 text-center">Views</div>
-            <div class="col-span-2 text-center">Last Post</div>
-          </div>
-          <?php if (count($posts) === 0): ?>
-            <div class="grid grid-cols-12 gap-4 p-3 text-sm items-center bg-gray-50">
-              <div class="col-span-12 text-center py-4">
-                <svg class="w-6 h-6 text-gray-400 mx-auto mb-2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
-                  fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <circle cx="12" cy="12" r="10"></circle>
-                  <line x1="12" y1="8" x2="12" y2="12"></line>
-                  <line x1="12" y1="16" x2="12.01" y2="16"></line>
-                </svg>
-                <p class="text-gray-600">No posts found in this category.</p>
-              </div>
-            </div>
-          </div>
-        <?php else: ?>
-          <?php foreach ($posts as $index => $post): ?>
-            <div
-              class="grid grid-cols-12 gap-4 p-3 text-sm items-center <?php echo $index % 2 === 0 ? 'bg-gray-50' : 'bg-white'; ?>">
-              <div class="col-span-6 flex items-center">
-                <svg class="w-5 h-5 text-blue-600 mr-2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
-                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-                </svg>
-                <a href="/post/<?php echo $post['id']; ?>"
-                  class="text-blue-600 hover:underline"><?php echo htmlspecialchars($post['title']); ?></a>
-              </div>
-              <div class="col-span-2 text-center flex items-center justify-center">
-                <svg class="w-4 h-4 mr-1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
-                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-                  <circle cx="12" cy="7" r="4"></circle>
-                </svg>
-                <span><?php echo htmlspecialchars($post['username']); ?></span>
-              </div>
-              <div class="col-span-1 text-center"><?php echo $post['reply_count']; ?></div>
-              <div class="col-span-1 text-center"><?php echo $post['view_count']; ?></div>
-              <div class="col-span-2 text-center">
-                <?php if ($post['last_reply_date']): ?>
-                  <?php echo date('M j, Y', strtotime($post['last_reply_date'])); ?>
-                <?php else: ?>
-                  No replies
-                <?php endif; ?>
-              </div>
-            </div>
-          <?php endforeach; ?>
-        <?php endif; ?>
-      </div>
-      <div class="mt-4 text-sm text-gray-600 flex items-center justify-between">
-        <?php if (isset($_SESSION['user_id'])): ?>
-          <a href="/create-post?category=<?php echo $category_slug; ?>"
-            class="bg-blue-100 text-blue-700 px-3 py-1 rounded hover:bg-blue-200 flex items-center">
-            New Topic
-            <svg class="w-4 h-4 ml-1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
-              stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-              <polyline points="15 3 21 3 21 9"></polyline>
-              <line x1="10" y1="14" x2="21" y2="3"></line>
-            </svg>
-          </a>
-        <?php else: ?>
-          <a href="/signup" class="text-blue-700 px-3 py-1 flex items-center">
-            Sign Up to Create a Topic
-          </a>
-        <?php endif; ?>
-        <span class="self-end"><?php echo $category_stats['topic_count']; ?> topics •
-          <?php echo $category_stats['post_count']; ?> posts</span>
-      </div>
-    </main>
   <?php elseif (str_starts_with($page_url, '/post')): ?>
     <?php
     $post_id = str_replace('/post/', '', $page_url);
@@ -701,11 +876,12 @@ function getCategoryStats($category_slug)
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                   d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
               </svg>
-              <p class="mt-2 text-sm font-bold"><?php echo htmlspecialchars($post['username']); ?></p>
+              <a href="/profile/<?php echo $post['username']; ?>"
+                class="mt-2 text-sm font-bold text-blue-600 hover:underline"><?php echo htmlspecialchars($post['username']); ?></a>
               <p class="text-xs text-gray-500">Posts: <?php echo $post['author_post_count']; ?></p>
             </div>
             <div class="flex-1 ml-4">
-              <p class="mb-4"><?php echo nl2br(htmlspecialchars($post['content'])); ?></p>
+              <div class="mb-4 prose"><?php echo renderHTML($post['content']); ?></div>
               <p class="mt-4 text-xs text-gray-500">Posted on:
                 <?php echo date('F j, Y', strtotime($post['created_at'])); ?>
               </p>
@@ -715,7 +891,7 @@ function getCategoryStats($category_slug)
 
         <!-- Replies -->
         <?php foreach ($comments as $comment): ?>
-          <div class="bg-white border border-gray-300 mb-4">
+          <div class="bg-white border border-gray-300 mb-4" id="comment<?php echo $comment['id']; ?>">
             <div class="bg-gray-100 p-2 border-b border-gray-300">
               <h3 class="font-bold">Re: <?php echo htmlspecialchars($post['title']); ?></h3>
             </div>
@@ -726,11 +902,12 @@ function getCategoryStats($category_slug)
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                     d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
                 </svg>
-                <p class="mt-2 text-sm font-bold"><?php echo htmlspecialchars($comment['username']); ?></p>
+                <a href="/profile/<?php echo $comment['username']; ?>"
+                  class="mt-2 text-sm font-bold text-blue-600 hover:underline"><?php echo htmlspecialchars($comment['username']); ?></a>
                 <p class="text-xs text-gray-500">Posts: <?php echo $comment['user_post_count']; ?></p>
               </div>
               <div class="flex-1 ml-4">
-                <p class="mb-4"><?php echo nl2br(htmlspecialchars($comment['content'])); ?></p>
+                <div class="mb-4 prose"><?php echo renderHTML($comment['content']); ?></div>
                 <p class="mt-4 text-xs text-gray-500">Posted on:
                   <?php echo date('F j, Y', strtotime($comment['created_at'])); ?>
                 </p>
@@ -745,7 +922,7 @@ function getCategoryStats($category_slug)
             <h3 class="font-bold mb-2">Post a Reply</h3>
             <form action="/create-comment?post=<?php echo $post['id']; ?>" method="post">
               <input type="hidden" name="csrf_token" value="<?php echo generateCSRFToken(); ?>">
-              <textarea name="content" class="w-full p-2 border border-gray-300 rounded" rows="4"
+              <textarea name="content" class="wysiwyg-editor w-full p-2 border border-gray-300 rounded" rows="4"
                 placeholder="Type your reply here..."></textarea>
               <button type="submit" class="mt-2 bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
                 <svg class="inline-block w-4 h-4 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
@@ -763,6 +940,96 @@ function getCategoryStats($category_slug)
           <?php endif; ?>
         </div>
     </main>
+  <?php elseif (str_starts_with($page_url, '/profile')): ?>
+    <?php
+    $username = str_replace('/profile/', '', $page_url);
+    $profile = getUserProfile($username);
+    if (!$profile) {
+      echo "<p>Profile not found.</p>";
+    } else {
+      ?>
+      <main class="max-w-4xl mx-auto m-4 px-4">
+        <div class="bg-gray-200 p-4 rounded-lg">
+          <header class="bg-blue-700 text-white p-4 rounded-t-lg">
+            <h1 class="text-2xl font-bold">Profile</h1>
+          </header>
+          <div class="bg-white rounded-b-lg shadow-md p-6">
+            <div class="flex items-center">
+              <div class="w-16 h-16 rounded-full mr-4">
+                <svg class="w-16 h-16 mx-auto text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none"
+                  viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                </svg>
+              </div>
+              <div>
+                <h2 class="text-lg font-bold"><?php echo htmlspecialchars($profile['user']['username']); ?></h2>
+                <p class="text-sm text-gray-500">Member since
+                  <?php echo date('F Y', strtotime($profile['user']['created_at'])); ?>
+                </p>
+                <p class="text-sm text-gray-500">
+                  <?php echo $profile['post_count']; ?> posts
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div class="mt-4 bg-white rounded-b-lg shadow-md p-6">
+
+            <h3 class="text-lg font-bold">Posts</h3>
+            <ul class="list-disc pl-4">
+              <?php
+              $combined = [];
+              $posts = $profile['posts'];
+              $comments = $profile['comments'];
+
+              foreach ($posts as $post) {
+                $combined[] = [
+                  'content' => $post['content'],
+                  'created_at' => $post['created_at'],
+                  'post_id' => $post['id'],
+                  'post_title' => $post['title'],
+                ];
+              }
+
+              foreach ($comments as $comment) {
+                $combined[] = [
+                  'content' => $comment['content'],
+                  'created_at' => $comment['created_at'],
+                  'post_id' => $comment['post_id'],
+                  'post_title' => $comment['post_title'],
+                  'comment_id' => $comment['id'],
+                ];
+              }
+
+              usort($combined, function ($a, $b) {
+                return strtotime($b['created_at']) - strtotime($a['created_at']);
+              });
+
+
+              foreach ($combined as $post): ?>
+                <?php
+                $suffix = isset($post['comment_id']) ? '#comment' . $post['comment_id'] : '';
+                ?>
+                <li>
+                  <a href="/post/<?php echo $post['post_id'] . $suffix; ?>" class="text-blue-600 hover:underline">
+                    <?= isset($post['comment_id']) ? 'Re: ' : '' ?>
+                    <?php echo renderHTML($post['post_title']); ?>
+                  </a>
+
+                  <p class="text-sm text-gray-500">
+                    <?php echo substr(renderHTML($post['content']), 0, 100) . '...'; ?>
+                  </p>
+                </li>
+              <?php endforeach; ?>
+            </ul>
+          </div>
+
+        </div>
+      </main>
+      <?php
+    }
+    ?>
   <?php elseif ($page_url === '/create-categories'): ?>
     <?php
     $form_data = $_SESSION['form_data'] ?? ['name' => ''];
@@ -814,8 +1081,8 @@ function getCategoryStats($category_slug)
             </div>
             <div class="mb-4">
               <label for="content" class="block text-sm font-medium text-gray-700">Post Content</label>
-              <textarea id="content" name="content" rows="6" required placeholder="Post Content (minimum 10 characters)"
-                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 mt-1"><?php echo htmlspecialchars($form_data['content']); ?></textarea>
+              <textarea id="content" name="content" class="wysiwyg-editor" rows="6"
+                placeholder="Post Content (minimum 10 characters)"><?php echo htmlspecialchars($form_data['content']); ?></textarea>
             </div>
             <div>
               <button type="submit"
