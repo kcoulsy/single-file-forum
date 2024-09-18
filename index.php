@@ -14,6 +14,7 @@ $page_url = explode('?', $_SERVER['REQUEST_URI'])[0];
 $db = new SQLite3('db.sqlite');
 
 $user_id = $_SESSION['user_id'] ?? null;
+$is_admin = true;
 
 /**
  * 
@@ -163,7 +164,18 @@ function validatePassword($password)
 if ($page_url === '/init') {
   // setup database tables
   // users
-  $db->exec("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, password TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)");
+
+  // Create users table if not exists
+  $db->exec("CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE,
+    role TEXT DEFAULT 'user',
+    ban_reason TEXT DEFAULT NULL,
+    ban_expiry TIMESTAMP DEFAULT NULL,
+    banned_at TIMESTAMP DEFAULT NULL,
+    password TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )");
 
   // forum categories
   $db->exec("CREATE TABLE IF NOT EXISTS forum_categories (
@@ -196,14 +208,6 @@ if ($page_url === '/init') {
     FOREIGN KEY (post_id) REFERENCES forum_posts(id)
   )");
 
-  // Create users table if not exists
-  $db->exec("CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE,
-    email TEXT UNIQUE,
-    password TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  )");
 
   // Create post_views table
   $db->exec("CREATE TABLE IF NOT EXISTS post_views (
@@ -214,6 +218,16 @@ if ($page_url === '/init') {
     FOREIGN KEY (post_id) REFERENCES forum_posts(id),
     FOREIGN KEY (user_id) REFERENCES users(id)
   )");
+
+  // Create user_logins table
+  $db->exec("CREATE TABLE IF NOT EXISTS user_logins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    login_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    ip_address TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  )");
+
 }
 
 /**
@@ -373,6 +387,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && verifyCSRFToken($_POST['csrf_token'
       if ($user && verifyPassword($password, $user['password'])) {
         $_SESSION['user_id'] = $user['id'];
         $_SESSION['username'] = $user['username'];
+
+        // Record the login
+        $user_id = $user['id'];
+        $ip_address = $_SERVER['REMOTE_ADDR'];
+        $db->exec("INSERT INTO user_logins (user_id, ip_address) VALUES ($user_id, '$ip_address')");
+
         $_SESSION['success'] = "Logged in successfully.";
         header('Location: /');
         exit;
@@ -715,6 +735,54 @@ function getAllUsers()
   return $users;
 }
 
+function getUserById($user_id)
+{
+  global $db;
+
+  $user_id = SQLite3::escapeString($user_id);
+  // get all fields from user,
+  $query = "SELECT u.*,
+            (SELECT COUNT(*) FROM forum_posts WHERE user_id = u.id) +
+            (SELECT COUNT(*) FROM forum_comments WHERE user_id = u.id) AS post_count
+            FROM users u WHERE id = '$user_id'";
+
+  $result = $db->querySingle($query, true);
+
+  if (!$result) {
+    return null;
+  }
+
+  $result['role'] = $result['role'] ?? 'user';
+
+  $last_login = $db->querySingle("SELECT login_time FROM user_logins WHERE user_id = $user_id");
+  $result['last_login'] = $last_login;
+
+  return $result;
+}
+
+
+function renderAdminSidebar()
+{
+  echo "
+      <aside class=\"max-w-xs mx-auto m-4 px-4 grow-0 shrink-0\">
+        <div class=\"bg-gray-200 p-4 rounded-lg\">
+          <header class=\"bg-blue-700 text-white p-4 rounded-t-lg\">
+            <h1 class=\"text-2xl font-bold\">Admin Panel</h1>
+          </header>
+          <div class=\"bg-white rounded-b-lg shadow-md\">
+            <ul class=\"list-none p-4\">
+              <li class=\"mb-2\"><a href=\"/admin/users\" class=\"text-blue-600 hover:underline\">Manage Users</a></li>
+              <li class=\"mb-2\"><a href=\"/admin/categories\" class=\"text-blue-600 hover:underline\">Manage Categories</a>
+              </li>
+              <li class=\"mb-2\"><a href=\"/admin/posts\" class=\"text-blue-600 hover:underline\">Manage Posts</a></li>
+              <li class=\"mb-2\"><a href=\"/admin/comments\" class=\"text-blue-600 hover:underline\">Manage Comments</a></li>
+            </ul>
+          </div>
+        </div>
+      </aside>
+  ";
+}
+
 
 /**
  * 
@@ -756,7 +824,7 @@ function getAllUsers()
   </script>
 </head>
 
-<f>
+<body>
   <header class="container mx-auto mt-8 px-4 max-w-4xl">
     <div class="flex justify-between items-center bg-gray-200 py-4 px-6 border border-gray-300 rounded-md shadow-sm">
       <a href="/" class="text-3xl font-bold text-blue-700">Forum</a>
@@ -1468,6 +1536,129 @@ function getAllUsers()
       </div>
     </main>
 
+  <?php elseif ($page_url === '/admin/users'): ?>
+    <?php
+    $users = getAllUsers();
+    ?>
+    <main class="max-w-4xl mx-auto m-4 px-4 flex align-start">
+      <?php renderAdminSidebar(); ?>
+      <div class="bg-gray-200 p-4 rounded-lg flex-1">
+        <header class="bg-blue-700 text-white p-4 rounded-t-lg">
+          <h1 class="text-2xl font-bold">Manage Users</h1>
+        </header>
+        <div class="bg-white rounded-b-lg shadow-md">
+          <div class="grid grid-cols-12 gap-4 p-3 bg-gray-200 font-semibold text-sm">
+            <div class="col-span-5">Username</div>
+            <div class="col-span-4">Joined</div>
+            <div class="col-span-3 text-center">Actions</div>
+          </div>
+          <?php if (count($users) === 0): ?>
+            <div class="grid grid-cols-12 gap-4 p-3 text-sm items-center bg-gray-50">
+              <div class="col-span-12 text-center py-4">
+                <svg class="w-6 h-6 text-gray-400 mx-auto mb-2" xmlns="http://www.w3.org/2000/svg" fill="none"
+                  viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                </svg>
+                <p class="text-gray-600">No members found.</p>
+              </div>
+            </div>
+          <?php else: ?>
+            <?php foreach ($users as $index => $user): ?>
+              <div
+                class="grid grid-cols-12 gap-4 p-3 text-sm items-center <?php echo $index % 2 === 0 ? 'bg-gray-50' : 'bg-white'; ?>">
+                <div class="col-span-5 flex items-center">
+                  <svg class="w-5 h-5 text-blue-600 mr-2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"
+                    fill="currentColor">
+                    <path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clip-rule="evenodd" />
+                  </svg>
+                  <a href="/profile/<?php echo $user['username']; ?>" class="text-blue-600 hover:underline font-semibold">
+                    <?php echo htmlspecialchars($user['username']); ?>
+                  </a>
+                </div>
+                <div class="col-span-4">
+                  <?php echo date('M j, Y', strtotime($user['created_at'])); ?>
+                </div>
+                <div class="col-span-3 text-center">
+                  <a href="/profile/<?php echo $user['username']; ?>" class="text-blue-600 hover:underline">Profile</a>
+                  <a href="/admin/users/edit/<?php echo $user['id']; ?>" class="text-blue-600 hover:underline">Edit</a>
+                </div>
+              </div>
+            <?php endforeach; ?>
+          <?php endif; ?>
+        </div>
+        <div class="mt-4 text-sm text-gray-600 flex items-center justify-between">
+          <span>Total members: <?php echo count($users); ?></span>
+        </div>
+      </div>
+    </main>
+
+
+  <?php elseif (str_starts_with($page_url, '/admin/users/edit')): ?>
+    <?php
+    $user_id = (int) explode('/', $page_url)[4];
+    $user = getUserById($user_id);
+
+    $is_banned = $user['banned_at'] !== null;
+
+    $banned_at = $is_banned ? $user['banned_at'] : null;
+    $ban_reason = $is_banned ? $user['ban_reason'] : null;
+
+    if (!$user) {
+      $_SESSION['error'] = "User not found.";
+      header('Location: /admin/users');
+      exit;
+    }
+    ?>
+    <main class="max-w-4xl mx-auto m-4 px-4 flex align-start">
+      <?php renderAdminSidebar(); ?>
+      <div class="flex-1">
+        <div class="bg-gray-200 p-4 rounded-lg flex-1">
+          <header class="bg-blue-700 text-white p-4 rounded-t-lg">
+            <h1 class="text-2xl font-bold">User Details</h1>
+          </header>
+          <div class="bg-white rounded-b-lg shadow-md p-4">
+            <p>Username: <?php echo htmlspecialchars($user['username']); ?></p>
+            <p>Role: <?php echo htmlspecialchars($user['role']); ?></p>
+            <p>Created At: <?php echo htmlspecialchars($user['created_at']); ?></p>
+            <p>Post Count: <?php echo htmlspecialchars($user['post_count']); ?></p>
+            <p>Last Login: <?php echo $user['last_login'] ? htmlspecialchars($user['last_login']) : 'Never'; ?></p>
+            <p>Status: <?php echo $is_banned ? 'Banned' : 'Active'; ?></p>
+            <?php if ($is_banned): ?>
+              <p>Ban Reason: <?php echo htmlspecialchars($ban_reason); ?></p>
+              <p>Banned At: <?php echo htmlspecialchars($banned_at); ?></p>
+            <?php endif; ?>
+          </div>
+        </div>
+        <div class="bg-gray-200 p-4 rounded-lg flex-1">
+          <header class="bg-blue-700 text-white p-4 rounded-t-lg">
+            <h1 class="text-2xl font-bold">Edit User</h1>
+          </header>
+          <div class="bg-white rounded-b-lg shadow-md p-4">
+            <form action="/admin/users/edit/<?php echo $user['id']; ?>" method="post" class="space-y-4">
+              <input type="hidden" name="csrf_token" value="<?php echo generateCSRFToken(); ?>">
+              <div>
+                <label for="role" class="block text-sm font-medium text-gray-700">Role</label>
+                <select id="role" name="role" required
+                  class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 mt-1">
+                  <option value="user" <?php echo $user['role'] === 'user' ? 'selected' : ''; ?>>User</option>
+                  <option value="moderator" <?php echo $user['role'] === 'moderator' ? 'selected' : ''; ?>>Moderator
+                  </option>
+                  <option value="admin" <?php echo $user['role'] === 'admin' ? 'selected' : ''; ?>>Admin</option>
+                </select>
+              </div>
+              <div>
+                <button type="submit"
+                  class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                  Update User
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </main>
+
   <?php else: ?>
     <main class="max-w-4xl mx-auto m-4 px-4">
       <h1 class="text-4xl font-bold text-center text-red-600 mb-4">404</h1>
@@ -1488,6 +1679,6 @@ function getAllUsers()
   <footer class="mt-8 text-gray-500 text-sm">
     <p class="text-sm text-center">Forum Software v1.0 | &copy; 2023 Our Forum</p>
   </footer>
-  </body>
+</body>
 
 </html>
